@@ -3,8 +3,10 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using RateLimiterSample.DataAccessLayer;
+using RateLimiterSample.Models;
 using SimpleAuthentication;
 using SimpleAuthentication.ApiKey;
+using SimpleAuthentication.JwtBearer;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -21,18 +23,20 @@ builder.Services.AddRateLimiter(options =>
 {
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
     {
-        var logger = context.RequestServices.GetService<ILogger<Program>>();
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
         logger.LogInformation("Executing Rate Limiting logic...");
 
-        if (context.User.Identity.IsAuthenticated)
+        if (context.User.Identity?.IsAuthenticated == true)
         {
             var permitLimit = Convert.ToInt32(context.User.FindFirstValue("PermitLimit"));
             var window = Convert.ToInt32(context.User.FindFirstValue("Window"));
 
-            return RateLimitPartition.GetFixedWindowLimiter(context.User.Identity.Name, _ => new FixedWindowRateLimiterOptions
+            return RateLimitPartition.GetFixedWindowLimiter(context.User.Identity?.Name ?? "Default", _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = permitLimit,
-                Window = TimeSpan.FromMinutes(window)
+                Window = TimeSpan.FromMinutes(window),
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
             });
         }
 
@@ -58,7 +62,8 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+builder.Services.AddProblemDetails();
+
 builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddSwaggerGen(options =>
@@ -71,27 +76,49 @@ var app = builder.Build();
 // Configure the HTTP request pipeline.
 app.UseHttpsRedirection();
 
+app.UseExceptionHandler();
+app.UseStatusCodePages();
+
 if (app.Environment.IsDevelopment())
 {
-    _ = app.UseSwagger();
-    _ = app.UseSwaggerUI();
+    app.UseSwagger();
+    app.UseSwaggerUI();
 }
+
+app.UseRouting();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.UseRateLimiter();
 
-app.MapControllers();
+app.MapPost("/api/login", async (IJwtBearerService jwtBearerService, LoginRequest request, DateTime? expiration = null) =>
+{
+    // Check for login rights...
+
+    // Add custom claims (optional).
+    var claims = new List<Claim>
+    {
+        new(ClaimTypes.GivenName, "Marco"),
+        new(ClaimTypes.Surname, "Minerva")
+    };
+
+    var token = await jwtBearerService.CreateTokenAsync(request.UserName, claims, absoluteExpiration: expiration);
+    return TypedResults.Ok(new LoginResponse(token));
+})
+.DisableRateLimiting()
+.WithOpenApi();
+
+app.MapGet("/api/ping", () =>
+{
+    return TypedResults.NoContent();
+})
+.WithOpenApi();
 
 app.Run();
 
-public class ApiKeyAuthenticator : IApiKeyValidator
+public class ApiKeyAuthenticator(ApplicationDbContext dbContext) : IApiKeyValidator
 {
-    private readonly ApplicationDbContext dbContext;
-
-    public ApiKeyAuthenticator(ApplicationDbContext dbContext)
-    {
-        this.dbContext = dbContext;
-    }
-
     public async Task<ApiKeyValidationResult> ValidateAsync(string apiKey)
     {
         var user = await dbContext.Accounts.Include(a => a.Subscription)
@@ -106,15 +133,8 @@ public class ApiKeyAuthenticator : IApiKeyValidator
     }
 }
 
-public class SubscriptionClaimTransformer : IClaimsTransformation
+public class SubscriptionClaimTransformer(ApplicationDbContext dbContext) : IClaimsTransformation
 {
-    private readonly ApplicationDbContext dbContext;
-
-    public SubscriptionClaimTransformer(ApplicationDbContext dbContext)
-    {
-        this.dbContext = dbContext;
-    }
-
     public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
     {
         var userName = principal.FindFirstValue(ClaimTypes.Name);
@@ -122,8 +142,8 @@ public class SubscriptionClaimTransformer : IClaimsTransformation
             .FirstOrDefaultAsync(a => a.UserName == userName);
 
         var identity = principal.Identity as ClaimsIdentity;
-        identity.AddClaim(new Claim("PermitLimit", user.Subscription.PermitLimit.ToString()));
-        identity.AddClaim(new Claim("Window", user.Subscription.WindowLimitMinutes.ToString()));
+        identity!.AddClaim(new Claim("PermitLimit", (user?.Subscription?.PermitLimit ?? 1).ToString()));
+        identity.AddClaim(new Claim("Window", (user?.Subscription?.WindowLimitMinutes ?? 1).ToString()));
 
         return principal;
     }

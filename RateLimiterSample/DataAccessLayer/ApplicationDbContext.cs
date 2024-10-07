@@ -20,26 +20,26 @@ public class ApplicationDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        _ = modelBuilder.Entity<Account>(entity =>
+        modelBuilder.Entity<Account>(entity =>
         {
-            _ = entity.Property(e => e.Id).HasDefaultValueSql("(newid())");
-            _ = entity.Property(e => e.ApiKey)
+            entity.Property(e => e.Id).ValueGeneratedOnAdd();
+            entity.Property(e => e.ApiKey)
                 .IsRequired()
                 .HasMaxLength(50)
                 .IsUnicode(false);
-            _ = entity.Property(e => e.UserName)
+            entity.Property(e => e.UserName)
                 .IsRequired()
                 .HasMaxLength(50);
 
-            _ = entity.HasOne(d => d.Subscription).WithMany(p => p.Accounts)
+            entity.HasOne(d => d.Subscription).WithMany(p => p.Accounts)
                 .HasForeignKey(d => d.SubscriptionId)
                 .HasConstraintName("FK_Accounts_Subscriptions");
         });
 
-        _ = modelBuilder.Entity<Subscription>(entity =>
+        modelBuilder.Entity<Subscription>(entity =>
         {
-            _ = entity.Property(e => e.Id).HasDefaultValueSql("(newid())");
-            _ = entity.Property(e => e.Name)
+            entity.Property(e => e.Id).ValueGeneratedOnAdd();
+            entity.Property(e => e.Name)
                 .IsRequired()
                 .HasMaxLength(50);
         });
